@@ -1,0 +1,30 @@
+{
+  "name": "claude-desktop-pet",
+  "version": "1.0.0",
+  "description": "Claude crab desktop pet",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable --x64"
+  },
+  "build": {
+    "appId": "com.claude.desktop-pet",
+    "productName": "ClaudeCrab",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "pet.html",
+      "renderer.js",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^26.8.1"
+  }
+}
