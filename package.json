@@ -17,6 +17,9 @@
       "main.js",
       "pet.html",
       "renderer.js",
+      "bubble.html",
+      "preload.js",
+      "snack.html",
       "package.json"
     ],
     "win": {

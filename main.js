@@ -1,11 +1,17 @@
+const fs = require('fs');
 const path = require('path');
-const { app, BrowserWindow, screen } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, Menu } = require('electron');
+
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
 
 function createWindow() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
 
-  const winW = 75;
-  const winH = 80;
+  const winW = 120;
+  const winH = 130;
 
   const win = new BrowserWindow({
     width: winW,
@@ -21,13 +27,51 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
-  win.setIgnoreMouseEvents(true, { forward: true });
   win.loadFile(path.join(__dirname, 'pet.html'));
 
-  const speed = 2;
+  const bubbleW = 200;
+  const bubbleH = 36;
+  const bubble = new BrowserWindow({
+    width: bubbleW,
+    height: bubbleH,
+    x: 0,
+    y: 0,
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    focusable: false,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  bubble.setIgnoreMouseEvents(true, { forward: true });
+  bubble.loadFile(path.join(__dirname, 'bubble.html'));
+
+  const CHAT = [
+    '今天天气不错 ☀️',
+    '有点无聊... 🦀',
+    '好安静啊 🍃',
+    '肚子有点饿了 🍔',
+    '有人看到我的钳子吗 🦞',
+    '今天的桌面真宽 🖥️',
+    '又是美好的一天 ✨',
+    '嗯...在想什么 🤔',
+    '啦啦啦 🎵',
+    '想出去走走 🌿',
+  ];
+  const REST_MSG = ['好累... 💤', '休息一下 😪', '打个盹... 😴', 'ZZzzz... 💤'];
+  const WAKE_MSG = ['睡饱了 ☀️', '嗯...精神了！✨', '继续散步~ 🚶', '刚才做了个好梦 🍪'];
+  const HAPPY_CHAT = ['嘿嘿 😆', '好开心 🎵', '今天状态超好 ⚡', '啦啦啦~ 🎶'];
+  const LONELY_CHAT = ['好无聊... 😞', '没人理我... 🥺', '想出去走走 🚶', '好孤单... 💧'];
+
   const dirs = [
     [1, 0], [-1, 0], [0, 1], [0, -1],
     [1, 1], [-1, -1], [1, -1], [-1, 1],
@@ -35,6 +79,23 @@ function createWindow() {
   let dx = 1;
   let dy = 1;
   let lastDx = 1;
+  let isResting = false;
+  let isPaused = false;
+  let pauseTimer = null;
+  let interactionScore = 20;
+
+  function getMood() {
+    if (interactionScore > 30) return 'happy';
+    if (interactionScore < 10) return 'lonely';
+    return 'neutral';
+  }
+
+  function getSpeed() {
+    const mood = getMood();
+    if (mood === 'happy') return 3;
+    if (mood === 'lonely') return 1;
+    return 2;
+  }
 
   function randomDir() {
     const d = dirs[Math.floor(Math.random() * dirs.length)];
@@ -54,14 +115,128 @@ function createWindow() {
     sendDirection();
   }, 3000 + Math.random() * 4000);
 
+  // Rest check (mood-aware, ~4-5 min)
+  setInterval(() => {
+    if (isResting) return;
+    const prob = getMood() === 'happy' ? 0.25 : 0.5;
+    if (Math.random() < prob) startRest();
+  }, 240000 + Math.random() * 120000);
+
+  let bubbleTimer = null;
+  function showBubble(msg) {
+    const safe = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    bubble.webContents.executeJavaScript(`show("${safe}")`).catch(() => {});
+    const [cx, cy] = win.getPosition();
+    bubble.setPosition(Math.round(cx + (winW - bubbleW) / 2), cy - bubbleH - 4);
+    bubble.show();
+    clearTimeout(bubbleTimer);
+    bubbleTimer = setTimeout(() => bubble.hide(), 4000);
+  }
+
+  // Mood decay
+  setInterval(() => {
+    interactionScore = Math.max(0, interactionScore - 3);
+  }, 60000);
+
+  // Chat interval (mood-aware)
+  setInterval(() => {
+    if (isResting) return;
+    const mood = getMood();
+    const prob = mood === 'happy' ? 0.35 : mood === 'lonely' ? 0.2 : 0.3;
+    if (Math.random() < prob) {
+      const pool = mood === 'happy' ? [...CHAT, ...HAPPY_CHAT]
+        : mood === 'lonely' ? LONELY_CHAT : CHAT;
+      showBubble(pool[Math.floor(Math.random() * pool.length)]);
+    }
+  }, 15000 + Math.random() * 10000);
+
+  function startRest() {
+    isResting = true;
+    showBubble(REST_MSG[Math.floor(Math.random() * REST_MSG.length)]);
+    win.webContents.executeJavaScript('setResting(true)').catch(() => {});
+    const duration = Math.random() < 0.6
+      ? 30000 + Math.random() * 30000
+      : 60000 + Math.random() * 30000;
+    setTimeout(() => {
+      isResting = false;
+      showBubble(WAKE_MSG[Math.floor(Math.random() * WAKE_MSG.length)]);
+      win.webContents.executeJavaScript('setResting(false)').catch(() => {});
+    }, duration);
+  }
+
+  // Cursor proximity detection
+  let cursorNear = false;
+  let cursorNearTimer = null;
+  setInterval(() => {
+    if (win.isDestroyed() || isResting) return;
+    const cursor = screen.getCursorScreenPoint();
+    const [wx, wy] = win.getPosition();
+    const dist = Math.hypot(cursor.x - (wx + winW / 2), cursor.y - (wy + winH / 2));
+    if (dist < 80) {
+      if (!cursorNear) {
+        cursorNear = true;
+        cursorNearTimer = setTimeout(() => {
+          if (cursorNear && !isResting) showBubble('别挡着我呀 😠');
+        }, 3000);
+      }
+    } else {
+      cursorNear = false;
+      clearTimeout(cursorNearTimer);
+    }
+  }, 600);
+
+  // IPC: drag
+  ipcMain.on('drag-start', () => {
+    win.webContents.executeJavaScript('setDragging(true)').catch(() => {});
+  });
+  ipcMain.on('drag-move', (e, dx, dy) => {
+    const [x, y] = win.getPosition();
+    win.setPosition(x + dx, y + dy);
+  });
+  ipcMain.on('drag-end', () => {
+    win.webContents.executeJavaScript('setDragging(false)').catch(() => {});
+  });
+  ipcMain.on('interact', () => {
+    isPaused = true;
+    interactionScore = Math.min(50, interactionScore + 8);
+    clearTimeout(pauseTimer);
+    pauseTimer = setTimeout(() => { isPaused = false; }, 1500);
+  });
+
+  // Right-click context menu
+  win.webContents.on('context-menu', () => {
+    Menu.buildFromTemplate([
+      { label: '喂食 🍪', click: () => win.webContents.executeJavaScript('feed()').catch(() => {}) },
+      { label: '立刻睡觉 😴', click: () => { if (!isResting) startRest(); } },
+      { type: 'separator' },
+      { label: '隐藏 👋', click: () => { win.hide(); bubble.hide(); hidden = true; } },
+    ]).popup();
+  });
+
+  // Toggle visibility shortcut
+  let hidden = false;
+  globalShortcut.register('CommandOrControl+Shift+C', () => {
+    if (hidden) {
+      win.show();
+      hidden = false;
+    } else {
+      win.hide();
+      bubble.hide();
+      hidden = true;
+    }
+  });
+
   const moveTimer = setInterval(() => {
     if (win.isDestroyed()) {
       clearInterval(moveTimer);
       return;
     }
+    if (isResting || isPaused) return;
+
     const [x, y] = win.getPosition();
-    let nx = x + dx * speed;
-    let ny = y + dy * speed;
+    const spd = getSpeed();
+    let nx = x + dx * spd;
+    let ny = y + dy * spd;
 
     // Bounce off screen edges
     if (nx <= 0) { nx = 0; dx = -dx; sendDirection(); }
@@ -70,13 +245,32 @@ function createWindow() {
     if (ny + winH >= screenH) { ny = screenH - winH; dy = -dy; }
 
     win.setPosition(nx, ny);
-  }, 33);
+    if (!bubble.isDestroyed() && bubble.isVisible()) {
+      bubble.setPosition(Math.round(nx + (winW - bubbleW) / 2), ny - bubbleH - 4);
+    }
 
-  win.on('closed', () => clearInterval(moveTimer));
+  }, 50);
+
+  win.on('closed', () => {
+    clearInterval(moveTimer);
+    clearTimeout(bubbleTimer);
+    globalShortcut.unregisterAll();
+    if (!bubble.isDestroyed()) bubble.close();
+  });
 }
 
 app.whenReady().then(() => {
-  app.setLoginItemSettings({ openAtLogin: true });
+  if (!app.isPackaged) {
+    const packagedExe = path.join(__dirname, 'dist', 'win-unpacked', 'electron.exe');
+    if (fs.existsSync(packagedExe)) {
+      app.setLoginItemSettings({ openAtLogin: true, path: packagedExe, name: 'ClaudeCrab' });
+    } else {
+      app.setLoginItemSettings({ openAtLogin: true, name: 'ClaudeCrab' });
+    }
+  } else {
+    app.setLoginItemSettings({ openAtLogin: true, name: 'ClaudeCrab' });
+  }
   createWindow();
 });
 app.on('window-all-closed', () => app.quit());
+}

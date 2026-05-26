@@ -1,16 +1,21 @@
-// Claude Crab with directional eyes + walk animation + blinking
-// Grid: 15×16 pixels, viewBox "0 0 15 16"
+// Claude Crab — interactive desktop pet
+// Grid: 15×16 pixels
 
 const COLORS = {
-  M: '#DE886D',           // body
-  B: '#000000',           // pupil / closed eye
-  W: '#FFFFFF',           // eye white
-  S: 'rgba(0,0,0,0.5)',  // ground shadow
+  M: '#DE886D',
+  B: '#000000',
+  W: '#FFFFFF',
+  S: 'rgba(0,0,0,0.5)',
 };
 
 const SCALE = 4;
+const CANVAS_W = 120;
+const CANVAS_H = 130;
 
-// Padding + body above eyes (rows 0-7)
+// Crab sprite (60×64 at scale 4), centered in 120×130 canvas
+const CRAB_OX = 30;
+const CRAB_OY = 33;
+
 const TOP = [
   '...............',
   '...............',
@@ -18,49 +23,51 @@ const TOP = [
   '...............',
   '...............',
   '...............',
-  '..MMMMMMMMMMM..',  // row 6
-  '..MMMMMMMMMMM..',  // row 7
+  '..MMMMMMMMMMM..',
+  '..MMMMMMMMMMM..',
 ];
 
-// Eye rows — asymmetric, pupils on left side of each 2px-wide eye.
-// Canvas flip for right-facing will mirror them to look right.
 const EYES_OPEN = [
-  '..MBWMMMMMBWMM..',   // row 8: left eye=(B,W) at 3-4, right eye=(B,W) at 10-11
-  'MMMBWMMMMMBWMMM',    // row 9: same with arms
+  '..MBWMMMMMBWMM..',
+  'MMMBWMMMMMBWMMM',
 ];
 
-// Eyes closed (body color only)
 const EYES_CLOSED = [
-  '..MMMMMMMMMMM..',    // row 8
-  'MMMMMMMMMMMMMMM',    // row 9
+  '..MMMMMMMMMMM..',
+  'MMMMMMMMMMMMMMM',
 ];
 
-// Body below eyes (rows 10-12)
 const BOTTOM = [
-  'MMMMMMMMMMMMMMM',    // row 10: arms + torso
-  '..MMMMMMMMMMM..',    // row 11
-  '..MMMMMMMMMMM..',    // row 12
+  'MMMMMMMMMMMMMMM',
+  '..MMMMMMMMMMM..',
+  '..MMMMMMMMMMM..',
 ];
 
-// Leg frames (rows 13-14)
 const LEGS = [
-  ['...M.M...M.M...', '...M.M...M.M...'],  // frame 0
-  ['..M...M.M...M..', '..M...M.M...M..'],  // frame 1
+  ['...M.M...M.M...', '...M.M...M.M...'],
+  ['..M...M.M...M..', '..M...M.M...M..'],
 ];
 
 const SHADOW = ['...SSSSSSS...'];
 
-let facing = -1;       // -1 = left, 1 = right
+// State
+let facing = -1;
 let walkFrame = 0;
 let walkTimer = 0;
-let blinkTimer = 0;    // countdown to next blink
+let blinkTimer = 0;
 let blinking = false;
-let blinkFrames = 0;   // remaining blink frames
+let blinkFrames = 0;
+let resting = false;
+let zParticles = [];
+let bounceFrames = 0;
+let dragging = false;
+
+const particlesEl = document.getElementById('particles');
+const clickParticles = [];
 
 function resetBlink() {
-  blinkTimer = 80 + Math.floor(Math.random() * 160); // ~2.5-8s
+  blinkTimer = 80 + Math.floor(Math.random() * 160);
 }
-
 resetBlink();
 
 function getCrab() {
@@ -73,26 +80,162 @@ function setDirection(dx) {
   else if (dx > 0) facing = 1;
 }
 
+function setResting(state) {
+  resting = state;
+  if (!resting) zParticles = [];
+}
+
+function setDragging(state) {
+  dragging = state;
+  if (!state) walkTimer = 0;
+}
+
+function spawnParticle(x, y, vx, vy, life, char) {
+  const el = document.createElement('span');
+  el.className = 'particle';
+  el.textContent = char;
+  el.style.left = x + 'px';
+  el.style.top = y + 'px';
+  particlesEl.appendChild(el);
+  clickParticles.push({ el, x, y, vx, vy, life, maxLife: life });
+}
+
+function handleClick() {
+  bounceFrames = 8;
+  window.crab.interact();
+  const cx = CANVAS_W / 2;
+  const cy = CRAB_OY + 16;
+  for (let i = 0; i < 6; i++) {
+    spawnParticle(
+      cx + (Math.random() - 0.5) * 20, cy,
+      (Math.random() - 0.5) * 2.5, -Math.random() * 3 - 1.5,
+      80, ['❤️', '💕', '✨'][Math.floor(Math.random() * 3)]
+    );
+  }
+}
+
+function feed() {
+  bounceFrames = 10;
+  window.crab.interact();
+  const cx = CANVAS_W / 2;
+  const cy = CRAB_OY + 16;
+  for (let i = 0; i < 10; i++) {
+    spawnParticle(
+      cx + (Math.random() - 0.5) * 30, cy,
+      (Math.random() - 0.5) * 4, -Math.random() * 5 - 2,
+      100, '🍪'
+    );
+  }
+}
+
+// Mouse events
+const canvas = document.getElementById('c');
+let mouseDown = false;
+let dragActive = false;
+let lastScreen = { x: 0, y: 0 };
+let clickTimer = null;
+
+canvas.addEventListener('mousedown', (e) => {
+  mouseDown = true;
+  lastScreen.x = e.screenX;
+  lastScreen.y = e.screenY;
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!mouseDown) return;
+  const dx = e.screenX - lastScreen.x;
+  const dy = e.screenY - lastScreen.y;
+  if (!dragActive && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+    dragActive = true;
+    if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+    window.crab.dragStart();
+  }
+  if (dragActive) {
+    window.crab.dragMove(dx, dy);
+    lastScreen.x = e.screenX;
+    lastScreen.y = e.screenY;
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  if (dragActive) {
+    window.crab.dragEnd();
+    dragActive = false;
+  } else if (mouseDown) {
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      feed();
+    } else {
+      clickTimer = setTimeout(() => {
+        handleClick();
+        clickTimer = null;
+      }, 250);
+    }
+  }
+  mouseDown = false;
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (dragActive) {
+    window.crab.dragEnd();
+    dragActive = false;
+  }
+  mouseDown = false;
+  if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+});
+
 function tick() {
-  // Walk cycle
-  walkTimer++;
-  if (walkTimer >= 8) {
-    walkTimer = 0;
-    walkFrame = 1 - walkFrame;
+  if (resting) {
+    blinking = true;
+    walkFrame = 0;
+    if (Math.random() < 0.03) {
+      zParticles.push({ x: 24 + Math.random() * 12, y: 16, life: 80 });
+    }
+    for (let i = zParticles.length - 1; i >= 0; i--) {
+      zParticles[i].y -= 0.4;
+      zParticles[i].life--;
+      if (zParticles[i].life <= 0) zParticles.splice(i, 1);
+    }
+  } else if (dragging) {
+    walkTimer++;
+    if (walkTimer >= 3) { walkTimer = 0; walkFrame = 1 - walkFrame; }
+    blinking = false;
+    resetBlink();
+  } else {
+    walkTimer++;
+    if (walkTimer >= 10) {
+      walkTimer = 0;
+      walkFrame = 1 - walkFrame;
+    }
+    if (blinking) {
+      blinkFrames--;
+      if (blinkFrames <= 0) {
+        blinking = false;
+        resetBlink();
+      }
+    } else {
+      blinkTimer--;
+      if (blinkTimer <= 0) {
+        blinking = true;
+        blinkFrames = 3;
+      }
+    }
   }
 
-  // Blink logic
-  if (blinking) {
-    blinkFrames--;
-    if (blinkFrames <= 0) {
-      blinking = false;
-      resetBlink();
-    }
-  } else {
-    blinkTimer--;
-    if (blinkTimer <= 0) {
-      blinking = true;
-      blinkFrames = 3; // ~100ms blink
+  // Update DOM particles
+  for (let i = clickParticles.length - 1; i >= 0; i--) {
+    const p = clickParticles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.12;
+    p.life--;
+    p.el.style.left = p.x + 'px';
+    p.el.style.top = p.y + 'px';
+    p.el.style.opacity = p.life / p.maxLife;
+    if (p.life <= 0) {
+      p.el.remove();
+      clickParticles.splice(i, 1);
     }
   }
 
@@ -101,20 +244,31 @@ function tick() {
 }
 
 function draw() {
-  const canvas = document.getElementById('c');
   const crab = getCrab();
   const w = crab[0].length * SCALE;
   const h = crab.length * SCALE;
-  canvas.width = w;
-  canvas.height = h;
-  canvas.style.width = w + 'px';
-  canvas.style.height = h + 'px';
+  canvas.width = CANVAS_W;
+  canvas.height = CANVAS_H;
+  canvas.style.width = CANVAS_W + 'px';
+  canvas.style.height = CANVAS_H + 'px';
 
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, w, h);
+  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
-  // Flip canvas for right-facing (mirrors the left-facing eyes to look right)
+  ctx.save();
+  const jx = dragging ? (Math.random() - 0.5) * 4 : 0;
+  const jy = dragging ? (Math.random() - 0.5) * 4 : 0;
+  ctx.translate(CRAB_OX + jx, CRAB_OY + jy);
+
+  // Bounce
+  if (bounceFrames > 0) {
+    const bounceY = Math.sin((bounceFrames / 8) * Math.PI) * -5;
+    ctx.save();
+    ctx.translate(0, bounceY);
+    bounceFrames--;
+  }
+
   if (facing === 1) {
     ctx.save();
     ctx.translate(w, 0);
@@ -130,9 +284,23 @@ function draw() {
     }
   }
 
-  if (facing === 1) {
-    ctx.restore();
+  if (resting) {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(13, 35, 6, 1);
+    ctx.fillRect(41, 35, 6, 1);
   }
+
+  if (facing === 1) ctx.restore();
+  if (bounceFrames > 0) ctx.restore();
+
+  // Zzz
+  for (const p of zParticles) {
+    ctx.fillStyle = `rgba(180,180,255,${p.life / 80})`;
+    ctx.font = 'bold 10px monospace';
+    ctx.fillText('Z', p.x, p.y);
+  }
+
+  ctx.restore();
 }
 
 draw();
