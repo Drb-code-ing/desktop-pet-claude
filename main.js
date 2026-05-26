@@ -1,3 +1,4 @@
+const path = require('path');
 const { app, BrowserWindow, screen } = require('electron');
 
 function createWindow() {
@@ -17,7 +18,6 @@ function createWindow() {
     resizable: false,
     skipTaskbar: true,
     focusable: false,
-    type: 'toolbar',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -25,7 +25,7 @@ function createWindow() {
   });
 
   win.setIgnoreMouseEvents(true, { forward: true });
-  win.loadFile('pet.html');
+  win.loadFile(path.join(__dirname, 'pet.html'));
 
   const speed = 2;
   const dirs = [
