@@ -3,8 +3,8 @@ const { app, BrowserWindow, screen } = require('electron');
 function createWindow() {
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
 
-  const winW = 110;
-  const winH = 116;
+  const winW = 75;
+  const winH = 80;
 
   const win = new BrowserWindow({
     width: winW,

@@ -8,7 +8,7 @@ const COLORS = {
   S: 'rgba(0,0,0,0.5)',  // ground shadow
 };
 
-const SCALE = 6;
+const SCALE = 4;
 
 // Padding + body above eyes (rows 0-7)
 const TOP = [
