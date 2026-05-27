@@ -61,6 +61,10 @@ let resting = false;
 let zParticles = [];
 let bounceFrames = 0;
 let dragging = false;
+let pageHidden = false;
+document.addEventListener('visibilitychange', () => {
+  pageHidden = document.hidden;
+});
 
 const particlesEl = document.getElementById('particles');
 const clickParticles = [];
@@ -196,6 +200,10 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 let frameCounter = 0;
 function tick() {
+  if (pageHidden) {
+    setTimeout(tick, 1000);
+    return;
+  }
   frameCounter++;
   if (frameCounter % 2 !== 0) {
     requestAnimationFrame(tick);
@@ -253,6 +261,11 @@ function tick() {
       p.el.remove();
       clickParticles.splice(i, 1);
     }
+  }
+  // Safety: cap particle count to prevent DOM bloat under lag
+  while (clickParticles.length > 30) {
+    const old = clickParticles.shift();
+    old.el.remove();
   }
 
   draw();

@@ -16,7 +16,7 @@ function createWindow() {
   }
   updateScreenBounds();
   screen.on('display-metrics-changed', updateScreenBounds);
-  setInterval(updateScreenBounds, 10000);
+  const screenBoundsTimer = setInterval(updateScreenBounds, 10000);
 
   const winW = 120;
   const winH = 130;
@@ -41,6 +41,16 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'pet.html'));
   win.webContents.on('context-menu', (e) => e.preventDefault());
+
+  // Auto-reload renderer on crash (fixes context menu reappearing during lag)
+  win.webContents.on('render-process-gone', (event, details) => {
+    console.error('Renderer crashed:', details.reason, details.exitCode);
+    setTimeout(() => {
+      if (!win.isDestroyed()) {
+        win.loadFile(path.join(__dirname, 'pet.html'));
+      }
+    }, 500);
+  });
 
   const bubbleW = 200;
   const bubbleH = 36;
@@ -93,7 +103,7 @@ function createWindow() {
   let pauseTimer = null;
   let interactionScore = 20;
   let cornerStuckCounter = 0;
-  let cursorCheckTick = 0;
+  let restTimeout = null;
   let directionTimer, restTimer, moodTimer, chatTimer;
 
   function getMood() {
@@ -182,7 +192,8 @@ function createWindow() {
     const safe = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     bubble.webContents.executeJavaScript(`show("${safe}")`).catch(() => {});
     const [cx, cy] = win.getPosition();
-    bubble.setPosition(Math.round(cx + (winW - bubbleW) / 2), cy - bubbleH - 4);
+    const bx = Math.max(0, Math.round(cx + (winW - bubbleW) / 2));
+    bubble.setPosition(bx, cy - bubbleH - 4);
     bubble.show();
     clearTimeout(bubbleTimer);
     bubbleTimer = setTimeout(() => bubble.hide(), 4000);
@@ -195,7 +206,9 @@ function createWindow() {
     const duration = Math.random() < 0.6
       ? 30000 + Math.random() * 30000
       : 60000 + Math.random() * 30000;
-    setTimeout(() => {
+    clearTimeout(restTimeout);
+    restTimeout = setTimeout(() => {
+      if (win.isDestroyed()) return;
       isResting = false;
       showBubble(WAKE_MSG[Math.floor(Math.random() * WAKE_MSG.length)]);
       win.webContents.executeJavaScript('setResting(false)').catch(() => {});
@@ -211,64 +224,70 @@ function createWindow() {
       clearInterval(moveTimer);
       return;
     }
-    if (isResting || isPaused) return;
+    try {
+      if (isResting || isPaused) return;
 
-    const [x, y] = win.getPosition();
-    const spd = getSpeed();
-    let nx = x + dx * spd;
-    let ny = y + dy * spd;
+      const [x, y] = win.getPosition();
+      const spd = getSpeed();
+      let nx = x + dx * spd;
+      let ny = y + dy * spd;
 
-    // Bounce off screen edges
-    if (nx <= 0) { nx = 0; dx = -dx; sendDirection(); }
-    if (ny <= 0) { ny = 0; dy = -dy; }
-    if (nx + winW >= screenW) { nx = screenW - winW; dx = -dx; sendDirection(); }
-    if (ny + winH >= screenH) { ny = screenH - winH; dy = -dy; }
+      // Bounce off screen edges
+      if (nx <= 0) { nx = 0; dx = -dx; sendDirection(); }
+      if (ny <= 0) { ny = 0; dy = -dy; }
+      if (nx + winW >= screenW) { nx = screenW - winW; dx = -dx; sendDirection(); }
+      if (ny + winH >= screenH) { ny = screenH - winH; dy = -dy; }
 
-    // Corner stuck detection: force escape if trapped at an edge
-    const atCorner =
-      (nx <= 2 || nx + winW >= screenW - 2) &&
-      (ny <= 2 || ny + winH >= screenH - 2);
-    if (atCorner) {
-      cornerStuckCounter++;
-      if (cornerStuckCounter > 20) {
-        const cx = Math.round(screenW / 2);
-        const cy = Math.round(screenH / 2);
-        dx = cx > nx + winW / 2 ? 1 : -1;
-        dy = cy > ny + winH / 2 ? 1 : -1;
-        sendDirection();
+      // Edge/corner stuck detection: force escape if trapped
+      const atEdge =
+        nx <= 0 || nx + winW >= screenW ||
+        ny <= 0 || ny + winH >= screenH;
+      if (atEdge) {
+        cornerStuckCounter++;
+        if (cornerStuckCounter > 8) {
+          const cx = Math.round(screenW / 2);
+          const cy = Math.round(screenH / 2);
+          dx = cx > nx + winW / 2 ? 1 : -1;
+          dy = cy > ny + winH / 2 ? 1 : -1;
+          sendDirection();
+          cornerStuckCounter = 0;
+        }
+      } else {
         cornerStuckCounter = 0;
       }
-    } else {
-      cornerStuckCounter = 0;
-    }
 
-    win.setPosition(nx, ny);
-    if (!bubble.isDestroyed() && bubble.isVisible()) {
-      bubble.setPosition(Math.round(nx + (winW - bubbleW) / 2), ny - bubbleH - 4);
-    }
-
-    // Cursor proximity check (every ~600ms = 12 ticks)
-    cursorCheckTick++;
-    if (cursorCheckTick >= 12) {
-      cursorCheckTick = 0;
-      if (!isResting) {
-        const cursor = screen.getCursorScreenPoint();
-        const dist = Math.hypot(cursor.x - (nx + winW / 2), cursor.y - (ny + winH / 2));
-        if (dist < 80) {
-          if (!cursorNear) {
-            cursorNear = true;
-            cursorNearTimer = setTimeout(() => {
-              if (cursorNear && !isResting) showBubble('别挡着我呀 😠');
-            }, 3000);
-          }
-        } else {
-          cursorNear = false;
-          clearTimeout(cursorNearTimer);
-        }
+      win.setPosition(nx, ny);
+      if (!bubble.isDestroyed() && bubble.isVisible()) {
+        const bx = Math.max(0, Math.round(nx + (winW - bubbleW) / 2));
+        bubble.setPosition(bx, ny - bubbleH - 4);
       }
+    } catch (err) {
+      console.error('Movement loop error:', err);
     }
+  }, 100);
 
-  }, 50);
+  // Cursor proximity check — separate 1000ms interval
+  const cursorCheckTimer = setInterval(() => {
+    if (win.isDestroyed()) {
+      clearInterval(cursorCheckTimer);
+      return;
+    }
+    if (isResting || isPaused) return;
+    const [x, y] = win.getPosition();
+    const cursor = screen.getCursorScreenPoint();
+    const dist = Math.hypot(cursor.x - (x + winW / 2), cursor.y - (y + winH / 2));
+    if (dist < 80) {
+      if (!cursorNear) {
+        cursorNear = true;
+        cursorNearTimer = setTimeout(() => {
+          if (cursorNear && !isResting) showBubble('别挡着我呀 😠');
+        }, 3000);
+      }
+    } else {
+      cursorNear = false;
+      clearTimeout(cursorNearTimer);
+    }
+  }, 1000);
 
   // IPC: drag
   ipcMain.on('drag-start', () => {
@@ -303,12 +322,20 @@ function createWindow() {
 
   win.on('closed', () => {
     clearInterval(moveTimer);
+    clearInterval(cursorCheckTimer);
+    clearInterval(screenBoundsTimer);
     clearTimeout(bubbleTimer);
     clearTimeout(cursorNearTimer);
     clearTimeout(directionTimer);
     clearTimeout(restTimer);
     clearTimeout(moodTimer);
     clearTimeout(chatTimer);
+    clearTimeout(pauseTimer);
+    clearTimeout(restTimeout);
+    ipcMain.removeAllListeners('drag-start');
+    ipcMain.removeAllListeners('drag-move');
+    ipcMain.removeAllListeners('drag-end');
+    ipcMain.removeAllListeners('interact');
     globalShortcut.unregisterAll();
     screen.removeAllListeners('display-metrics-changed');
     if (!bubble.isDestroyed()) bubble.close();
