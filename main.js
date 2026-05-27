@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, Menu } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, globalShortcut } = require('electron');
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -8,7 +8,15 @@ if (!gotTheLock) {
 } else {
 
 function createWindow() {
-  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+  let screenW, screenH;
+  function updateScreenBounds() {
+    const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+    screenW = width;
+    screenH = height;
+  }
+  updateScreenBounds();
+  screen.on('display-metrics-changed', updateScreenBounds);
+  setInterval(updateScreenBounds, 10000);
 
   const winW = 120;
   const winH = 130;
@@ -32,6 +40,7 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'pet.html'));
+  win.webContents.on('context-menu', (e) => e.preventDefault());
 
   const bubbleW = 200;
   const bubbleH = 36;
@@ -83,6 +92,9 @@ function createWindow() {
   let isPaused = false;
   let pauseTimer = null;
   let interactionScore = 20;
+  let cornerStuckCounter = 0;
+  let cursorCheckTick = 0;
+  let directionTimer, restTimer, moodTimer, chatTimer;
 
   function getMood() {
     if (interactionScore > 30) return 'happy';
@@ -110,17 +122,60 @@ function createWindow() {
     }
   }
 
-  setInterval(() => {
-    if (Math.random() < 0.6) randomDir();
-    sendDirection();
-  }, 3000 + Math.random() * 4000);
+  // Direction change timer (recursive setTimeout, 3-7s)
+  function scheduleDirection() {
+    const delay = 3000 + Math.random() * 4000;
+    directionTimer = setTimeout(() => {
+      if (win.isDestroyed()) return;
+      if (Math.random() < 0.6) randomDir();
+      sendDirection();
+      scheduleDirection();
+    }, delay);
+  }
+  scheduleDirection();
 
-  // Rest check (mood-aware, ~4-5 min)
-  setInterval(() => {
-    if (isResting) return;
-    const prob = getMood() === 'happy' ? 0.25 : 0.5;
-    if (Math.random() < prob) startRest();
-  }, 240000 + Math.random() * 120000);
+  // Rest check timer (recursive setTimeout, 4-6 min)
+  function scheduleRestCheck() {
+    const delay = 240000 + Math.random() * 120000;
+    restTimer = setTimeout(() => {
+      if (win.isDestroyed()) return;
+      if (!isResting) {
+        const prob = getMood() === 'happy' ? 0.25 : 0.5;
+        if (Math.random() < prob) startRest();
+      }
+      scheduleRestCheck();
+    }, delay);
+  }
+  scheduleRestCheck();
+
+  // Mood decay timer (recursive setTimeout, 60s)
+  function scheduleMoodDecay() {
+    moodTimer = setTimeout(() => {
+      if (win.isDestroyed()) return;
+      interactionScore = Math.max(0, interactionScore - 3);
+      scheduleMoodDecay();
+    }, 60000);
+  }
+  scheduleMoodDecay();
+
+  // Chat timer (recursive setTimeout, 15-25s)
+  function scheduleChat() {
+    const delay = 15000 + Math.random() * 10000;
+    chatTimer = setTimeout(() => {
+      if (win.isDestroyed()) return;
+      if (!isResting) {
+        const mood = getMood();
+        const prob = mood === 'happy' ? 0.35 : mood === 'lonely' ? 0.2 : 0.3;
+        if (Math.random() < prob) {
+          const pool = mood === 'happy' ? [...CHAT, ...HAPPY_CHAT]
+            : mood === 'lonely' ? LONELY_CHAT : CHAT;
+          showBubble(pool[Math.floor(Math.random() * pool.length)]);
+        }
+      }
+      scheduleChat();
+    }, delay);
+  }
+  scheduleChat();
 
   let bubbleTimer = null;
   function showBubble(msg) {
@@ -132,23 +187,6 @@ function createWindow() {
     clearTimeout(bubbleTimer);
     bubbleTimer = setTimeout(() => bubble.hide(), 4000);
   }
-
-  // Mood decay
-  setInterval(() => {
-    interactionScore = Math.max(0, interactionScore - 3);
-  }, 60000);
-
-  // Chat interval (mood-aware)
-  setInterval(() => {
-    if (isResting) return;
-    const mood = getMood();
-    const prob = mood === 'happy' ? 0.35 : mood === 'lonely' ? 0.2 : 0.3;
-    if (Math.random() < prob) {
-      const pool = mood === 'happy' ? [...CHAT, ...HAPPY_CHAT]
-        : mood === 'lonely' ? LONELY_CHAT : CHAT;
-      showBubble(pool[Math.floor(Math.random() * pool.length)]);
-    }
-  }, 15000 + Math.random() * 10000);
 
   function startRest() {
     isResting = true;
@@ -167,64 +205,6 @@ function createWindow() {
   // Cursor proximity detection
   let cursorNear = false;
   let cursorNearTimer = null;
-  setInterval(() => {
-    if (win.isDestroyed() || isResting) return;
-    const cursor = screen.getCursorScreenPoint();
-    const [wx, wy] = win.getPosition();
-    const dist = Math.hypot(cursor.x - (wx + winW / 2), cursor.y - (wy + winH / 2));
-    if (dist < 80) {
-      if (!cursorNear) {
-        cursorNear = true;
-        cursorNearTimer = setTimeout(() => {
-          if (cursorNear && !isResting) showBubble('别挡着我呀 😠');
-        }, 3000);
-      }
-    } else {
-      cursorNear = false;
-      clearTimeout(cursorNearTimer);
-    }
-  }, 600);
-
-  // IPC: drag
-  ipcMain.on('drag-start', () => {
-    win.webContents.executeJavaScript('setDragging(true)').catch(() => {});
-  });
-  ipcMain.on('drag-move', (e, dx, dy) => {
-    const [x, y] = win.getPosition();
-    win.setPosition(x + dx, y + dy);
-  });
-  ipcMain.on('drag-end', () => {
-    win.webContents.executeJavaScript('setDragging(false)').catch(() => {});
-  });
-  ipcMain.on('interact', () => {
-    isPaused = true;
-    interactionScore = Math.min(50, interactionScore + 8);
-    clearTimeout(pauseTimer);
-    pauseTimer = setTimeout(() => { isPaused = false; }, 1500);
-  });
-
-  // Right-click context menu
-  win.webContents.on('context-menu', () => {
-    Menu.buildFromTemplate([
-      { label: '喂食 🍪', click: () => win.webContents.executeJavaScript('feed()').catch(() => {}) },
-      { label: '立刻睡觉 😴', click: () => { if (!isResting) startRest(); } },
-      { type: 'separator' },
-      { label: '隐藏 👋', click: () => { win.hide(); bubble.hide(); hidden = true; } },
-    ]).popup();
-  });
-
-  // Toggle visibility shortcut
-  let hidden = false;
-  globalShortcut.register('CommandOrControl+Shift+C', () => {
-    if (hidden) {
-      win.show();
-      hidden = false;
-    } else {
-      win.hide();
-      bubble.hide();
-      hidden = true;
-    }
-  });
 
   const moveTimer = setInterval(() => {
     if (win.isDestroyed()) {
@@ -244,17 +224,93 @@ function createWindow() {
     if (nx + winW >= screenW) { nx = screenW - winW; dx = -dx; sendDirection(); }
     if (ny + winH >= screenH) { ny = screenH - winH; dy = -dy; }
 
+    // Corner stuck detection: force escape if trapped at an edge
+    const atCorner =
+      (nx <= 2 || nx + winW >= screenW - 2) &&
+      (ny <= 2 || ny + winH >= screenH - 2);
+    if (atCorner) {
+      cornerStuckCounter++;
+      if (cornerStuckCounter > 20) {
+        const cx = Math.round(screenW / 2);
+        const cy = Math.round(screenH / 2);
+        dx = cx > nx + winW / 2 ? 1 : -1;
+        dy = cy > ny + winH / 2 ? 1 : -1;
+        sendDirection();
+        cornerStuckCounter = 0;
+      }
+    } else {
+      cornerStuckCounter = 0;
+    }
+
     win.setPosition(nx, ny);
     if (!bubble.isDestroyed() && bubble.isVisible()) {
       bubble.setPosition(Math.round(nx + (winW - bubbleW) / 2), ny - bubbleH - 4);
     }
 
+    // Cursor proximity check (every ~600ms = 12 ticks)
+    cursorCheckTick++;
+    if (cursorCheckTick >= 12) {
+      cursorCheckTick = 0;
+      if (!isResting) {
+        const cursor = screen.getCursorScreenPoint();
+        const dist = Math.hypot(cursor.x - (nx + winW / 2), cursor.y - (ny + winH / 2));
+        if (dist < 80) {
+          if (!cursorNear) {
+            cursorNear = true;
+            cursorNearTimer = setTimeout(() => {
+              if (cursorNear && !isResting) showBubble('别挡着我呀 😠');
+            }, 3000);
+          }
+        } else {
+          cursorNear = false;
+          clearTimeout(cursorNearTimer);
+        }
+      }
+    }
+
   }, 50);
+
+  // IPC: drag
+  ipcMain.on('drag-start', () => {
+    win.webContents.executeJavaScript('setDragging(true)').catch(() => {});
+  });
+  ipcMain.on('drag-move', (e, dx, dy) => {
+    const [x, y] = win.getPosition();
+    win.setPosition(x + dx, y + dy);
+  });
+  ipcMain.on('drag-end', () => {
+    win.webContents.executeJavaScript('setDragging(false)').catch(() => {});
+  });
+  ipcMain.on('interact', () => {
+    isPaused = true;
+    interactionScore = Math.min(50, interactionScore + 8);
+    clearTimeout(pauseTimer);
+    pauseTimer = setTimeout(() => { isPaused = false; }, 1500);
+  });
+
+  // Toggle visibility shortcut
+  let hidden = false;
+  globalShortcut.register('CommandOrControl+Shift+C', () => {
+    if (hidden) {
+      win.show();
+      hidden = false;
+    } else {
+      win.hide();
+      bubble.hide();
+      hidden = true;
+    }
+  });
 
   win.on('closed', () => {
     clearInterval(moveTimer);
     clearTimeout(bubbleTimer);
+    clearTimeout(cursorNearTimer);
+    clearTimeout(directionTimer);
+    clearTimeout(restTimer);
+    clearTimeout(moodTimer);
+    clearTimeout(chatTimer);
     globalShortcut.unregisterAll();
+    screen.removeAllListeners('display-metrics-changed');
     if (!bubble.isDestroyed()) bubble.close();
   });
 }

@@ -66,7 +66,7 @@ const particlesEl = document.getElementById('particles');
 const clickParticles = [];
 
 function resetBlink() {
-  blinkTimer = 80 + Math.floor(Math.random() * 160);
+  blinkTimer = 40 + Math.floor(Math.random() * 80);
 }
 resetBlink();
 
@@ -108,7 +108,7 @@ function handleClick() {
   for (let i = 0; i < 6; i++) {
     spawnParticle(
       cx + (Math.random() - 0.5) * 20, cy,
-      (Math.random() - 0.5) * 2.5, -Math.random() * 3 - 1.5,
+      (Math.random() - 0.5) * 5, -Math.random() * 6 - 3,
       80, ['❤️', '💕', '✨'][Math.floor(Math.random() * 3)]
     );
   }
@@ -122,7 +122,7 @@ function feed() {
   for (let i = 0; i < 10; i++) {
     spawnParticle(
       cx + (Math.random() - 0.5) * 30, cy,
-      (Math.random() - 0.5) * 4, -Math.random() * 5 - 2,
+      (Math.random() - 0.5) * 8, -Math.random() * 10 - 4,
       100, '🍪'
     );
   }
@@ -130,6 +130,13 @@ function feed() {
 
 // Mouse events
 const canvas = document.getElementById('c');
+canvas.width = CANVAS_W;
+canvas.height = CANVAS_H;
+canvas.style.width = CANVAS_W + 'px';
+canvas.style.height = CANVAS_H + 'px';
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
 let mouseDown = false;
 let dragActive = false;
 let lastScreen = { x: 0, y: 0 };
@@ -185,7 +192,16 @@ canvas.addEventListener('mouseleave', () => {
   if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
 });
 
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+let frameCounter = 0;
 function tick() {
+  frameCounter++;
+  if (frameCounter % 2 !== 0) {
+    requestAnimationFrame(tick);
+    return;
+  }
+
   if (resting) {
     blinking = true;
     walkFrame = 0;
@@ -193,18 +209,18 @@ function tick() {
       zParticles.push({ x: 24 + Math.random() * 12, y: 16, life: 80 });
     }
     for (let i = zParticles.length - 1; i >= 0; i--) {
-      zParticles[i].y -= 0.4;
+      zParticles[i].y -= 0.8;
       zParticles[i].life--;
       if (zParticles[i].life <= 0) zParticles.splice(i, 1);
     }
   } else if (dragging) {
     walkTimer++;
-    if (walkTimer >= 3) { walkTimer = 0; walkFrame = 1 - walkFrame; }
+    if (walkTimer >= 2) { walkTimer = 0; walkFrame = 1 - walkFrame; }
     blinking = false;
     resetBlink();
   } else {
     walkTimer++;
-    if (walkTimer >= 10) {
+    if (walkTimer >= 5) {
       walkTimer = 0;
       walkFrame = 1 - walkFrame;
     }
@@ -218,7 +234,7 @@ function tick() {
       blinkTimer--;
       if (blinkTimer <= 0) {
         blinking = true;
-        blinkFrames = 3;
+        blinkFrames = 2;
       }
     }
   }
@@ -228,7 +244,7 @@ function tick() {
     const p = clickParticles[i];
     p.x += p.vx;
     p.y += p.vy;
-    p.vy += 0.12;
+    p.vy += 0.24;
     p.life--;
     p.el.style.left = p.x + 'px';
     p.el.style.top = p.y + 'px';
@@ -244,16 +260,11 @@ function tick() {
 }
 
 function draw() {
+  try {
   const crab = getCrab();
   const w = crab[0].length * SCALE;
   const h = crab.length * SCALE;
-  canvas.width = CANVAS_W;
-  canvas.height = CANVAS_H;
-  canvas.style.width = CANVAS_W + 'px';
-  canvas.style.height = CANVAS_H + 'px';
 
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
   ctx.save();
@@ -262,11 +273,13 @@ function draw() {
   ctx.translate(CRAB_OX + jx, CRAB_OY + jy);
 
   // Bounce
+  let didBounceSave = false;
   if (bounceFrames > 0) {
     const bounceY = Math.sin((bounceFrames / 8) * Math.PI) * -5;
     ctx.save();
     ctx.translate(0, bounceY);
     bounceFrames--;
+    didBounceSave = true;
   }
 
   if (facing === 1) {
@@ -291,7 +304,7 @@ function draw() {
   }
 
   if (facing === 1) ctx.restore();
-  if (bounceFrames > 0) ctx.restore();
+  if (didBounceSave) ctx.restore();
 
   // Zzz
   for (const p of zParticles) {
@@ -301,6 +314,14 @@ function draw() {
   }
 
   ctx.restore();
+  } catch (err) {
+    // Reset canvas if context is corrupted
+    canvas.width = CANVAS_W;
+    canvas.height = CANVAS_H;
+    canvas.style.width = CANVAS_W + 'px';
+    canvas.style.height = CANVAS_H + 'px';
+    ctx.imageSmoothingEnabled = false;
+  }
 }
 
 draw();
